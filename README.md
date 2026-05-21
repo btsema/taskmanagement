@@ -30,7 +30,7 @@ The project is divided into four layers:
 1.  Clone the repository
 2.  Update connection string 
 3.  Run the webapi
-4.  Go to FE folder
+4.  Go to TaskMgmt.Client folder
 5.  Open the folder in cmd and run:
       > npm install
 	  > npm run start
