@@ -1,0 +1,175 @@
+﻿using System.Security.Claims;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Moq;
+using TaskMgmt.Api.Controllers;
+using TaskMgmt.Application.DTOs;
+using TaskMgmt.Application.Exceptions;
+using TaskMgmt.Application.Interfaces;
+using TaskMgmt.Domain.Enums;
+using TaskStatus = TaskMgmt.Domain.Enums.TaskStatus;
+
+namespace TaskMgmt.Tests.Controllers;
+
+public class TasksControllerTests
+{
+    private readonly Mock<ITaskService> _taskServiceMock;
+    private readonly TasksController _sut;
+    private readonly Guid _userId = Guid.NewGuid();
+
+    public TasksControllerTests()
+    {
+        _taskServiceMock = new Mock<ITaskService>();
+        _sut = new TasksController(_taskServiceMock.Object);
+
+        // Set up a fake authenticated user with a known UserId claim
+        var claims = new List<Claim>
+        {
+            new Claim(ClaimTypes.NameIdentifier, _userId.ToString())
+        };
+        var identity = new ClaimsIdentity(claims, "TestAuth");
+        var principal = new ClaimsPrincipal(identity);
+
+        _sut.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = principal }
+        };
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private TaskResponse MakeResponse(Guid? id = null) =>
+        new(id ?? Guid.NewGuid(), "Task", "Desc", null, Priority.Medium, TaskStatus.Todo, DateTime.UtcNow);
+
+    // ── GET /api/tasks ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetAll_Returns200WithTasks()
+    {
+        var tasks = new List<TaskResponse> { MakeResponse(), MakeResponse() };
+        _taskServiceMock.Setup(s => s.GetUserTasksAsync(_userId)).ReturnsAsync(tasks);
+
+        var result = await _sut.GetAll();
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var returned = Assert.IsAssignableFrom<IEnumerable<TaskResponse>>(ok.Value);
+        Assert.Equal(2, returned.Count());
+    }
+
+    // ── GET /api/tasks/{id} ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetById_Returns200_WhenTaskExists()
+    {
+        var response = MakeResponse();
+        _taskServiceMock.Setup(s => s.GetTaskByIdAsync(_userId, response.Id)).ReturnsAsync(response);
+
+        var result = await _sut.GetById(response.Id);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var returned = Assert.IsType<TaskResponse>(ok.Value);
+        Assert.Equal(response.Id, returned.Id);
+    }
+
+    [Fact]
+    public async Task GetById_ThrowsNotFoundException_WhenTaskDoesNotExist()
+    {
+        var id = Guid.NewGuid();
+        _taskServiceMock.Setup(s => s.GetTaskByIdAsync(_userId, id))
+                        .ThrowsAsync(new NotFoundException(nameof(TaskResponse), id));
+
+        await Assert.ThrowsAsync<NotFoundException>(() => _sut.GetById(id));
+    }
+
+    // ── POST /api/tasks ───────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Create_Returns201WithCreatedTask()
+    {
+        var request = new CreateTaskRequest("New", "Desc", null, Priority.High);
+        var response = MakeResponse();
+        _taskServiceMock.Setup(s => s.CreateTaskAsync(_userId, request)).ReturnsAsync(response);
+
+        var result = await _sut.Create(request);
+
+        var created = Assert.IsType<CreatedAtActionResult>(result.Result);
+        Assert.Equal(201, created.StatusCode);
+        var returned = Assert.IsType<TaskResponse>(created.Value);
+        Assert.Equal(response.Id, returned.Id);
+    }
+
+    [Fact]
+    public async Task Create_SetsCorrectLocationHeader()
+    {
+        var request = new CreateTaskRequest("New", "Desc", null, Priority.Low);
+        var response = MakeResponse();
+        _taskServiceMock.Setup(s => s.CreateTaskAsync(_userId, request)).ReturnsAsync(response);
+
+        var result = await _sut.Create(request);
+
+        var created = Assert.IsType<CreatedAtActionResult>(result.Result);
+        Assert.Equal(nameof(_sut.GetById), created.ActionName);
+        Assert.Equal(response.Id, ((dynamic)created.RouteValues!).id);
+    }
+
+    // ── PUT /api/tasks/{id} ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Update_Returns200WithUpdatedTask()
+    {
+        var id = Guid.NewGuid();
+        var request = new UpdateTaskRequest("Updated", "Desc", null, Priority.Low, TaskStatus.InProgress);
+        var response = MakeResponse(id);
+        _taskServiceMock.Setup(s => s.UpdateTaskAsync(_userId, id, request)).ReturnsAsync(response);
+
+        var result = await _sut.Update(id, request);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var returned = Assert.IsType<TaskResponse>(ok.Value);
+        Assert.Equal(id, returned.Id);
+    }
+
+    [Fact]
+    public async Task Update_ThrowsUnauthorizedException_WhenNotOwner()
+    {
+        var id = Guid.NewGuid();
+        var request = new UpdateTaskRequest("X", "Y", null, Priority.Low, TaskStatus.Done);
+        _taskServiceMock.Setup(s => s.UpdateTaskAsync(_userId, id, request))
+                        .ThrowsAsync(new UnauthorizedException());
+
+        await Assert.ThrowsAsync<UnauthorizedException>(() => _sut.Update(id, request));
+    }
+
+    // ── DELETE /api/tasks/{id} ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Delete_Returns204_WhenTaskDeleted()
+    {
+        var id = Guid.NewGuid();
+        _taskServiceMock.Setup(s => s.DeleteTaskAsync(_userId, id)).Returns(Task.CompletedTask);
+
+        var result = await _sut.Delete(id);
+
+        Assert.IsType<NoContentResult>(result);
+    }
+
+    [Fact]
+    public async Task Delete_ThrowsNotFoundException_WhenTaskDoesNotExist()
+    {
+        var id = Guid.NewGuid();
+        _taskServiceMock.Setup(s => s.DeleteTaskAsync(_userId, id))
+                        .ThrowsAsync(new NotFoundException(nameof(TaskResponse), id));
+
+        await Assert.ThrowsAsync<NotFoundException>(() => _sut.Delete(id));
+    }
+
+    [Fact]
+    public async Task Delete_ThrowsUnauthorizedException_WhenNotOwner()
+    {
+        var id = Guid.NewGuid();
+        _taskServiceMock.Setup(s => s.DeleteTaskAsync(_userId, id))
+                        .ThrowsAsync(new UnauthorizedException());
+
+        await Assert.ThrowsAsync<UnauthorizedException>(() => _sut.Delete(id));
+    }
+}

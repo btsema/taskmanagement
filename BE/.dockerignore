@@ -1,0 +1,27 @@
+# Build output
+**/bin/
+**/obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
+# Test projects
+TaskMgmt.Tests/
+
+# Environment / secrets
+.env
+*.env.*
+
+# Git
+.git/
+.gitignore
+
+# Docs
+*.md

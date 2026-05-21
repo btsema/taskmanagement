@@ -1,0 +1,45 @@
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
+using System.Text;
+using TaskMgmt.Api.Extensions;
+using TaskMgmt.Api.Middleware;
+using TaskMgmt.Infrastructure.Persistence;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllers();
+builder.Services.AddSwagger();
+builder.Services.AddDatabase(builder.Configuration);
+builder.Services.AddJwtAuthentication(builder.Configuration);
+builder.Services.AddApplicationServices();
+builder.Services.AddAutoMapperProfiles();
+builder.Services.AddCorsPolicy();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+    
+    // Auto-migrate on startup for easy setup
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.EnsureCreated();
+}
+
+app.UseMiddleware<ExceptionMiddleware>();
+
+app.UseHttpsRedirection();
+
+app.UseCors("DefaultPolicy");
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();

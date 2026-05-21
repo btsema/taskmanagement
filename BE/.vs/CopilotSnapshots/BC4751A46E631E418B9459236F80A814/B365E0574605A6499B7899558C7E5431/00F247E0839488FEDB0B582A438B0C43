@@ -1,0 +1,51 @@
+﻿using AutoMapper;
+using TaskMgmt.Application.DTOs;
+using TaskMgmt.Application.Exceptions;
+using TaskMgmt.Application.Interfaces;
+using TaskMgmt.Domain.Entities;
+
+namespace TaskMgmt.Application.Services;
+
+public class UserService : IUserService
+{
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IMapper _mapper;
+    private readonly IJwtProvider _jwtProvider;
+
+    public UserService(IUnitOfWork unitOfWork, IMapper mapper, IJwtProvider jwtProvider)
+    {
+        _unitOfWork = unitOfWork;
+        _mapper = mapper;
+        _jwtProvider = jwtProvider;
+    }
+
+    public async Task<AuthResponse> RegisterAsync(RegisterRequest request)
+    {
+        var user = new User
+        {
+            Email = request.Email,
+            FullName = request.FullName,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password)
+        };
+
+        await _unitOfWork.Repository<User>().AddAsync(user);
+        await _unitOfWork.SaveChangesAsync();
+
+        var token = _jwtProvider.GenerateToken(user);
+        var response = _mapper.Map<AuthResponse>(user);
+        return response with { Token = token };
+    }
+
+    public async Task<AuthResponse> LoginAsync(LoginRequest request)
+    {
+        var users = await _unitOfWork.Repository<User>().FindAsync(u => u.Email == request.Email);
+        var user = users.FirstOrDefault();
+
+        if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+            throw new UnauthorizedException("Invalid email or password.");
+
+        var token = _jwtProvider.GenerateToken(user);
+        var response = _mapper.Map<AuthResponse>(user);
+        return response with { Token = token };
+    }
+}

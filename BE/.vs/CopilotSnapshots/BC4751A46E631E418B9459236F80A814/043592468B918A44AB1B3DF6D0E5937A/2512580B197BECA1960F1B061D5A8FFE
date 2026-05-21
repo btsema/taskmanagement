@@ -1,0 +1,193 @@
+﻿using AutoMapper;
+using Moq;
+using TaskMgmt.Application.DTOs;
+using TaskMgmt.Application.Exceptions;
+using TaskMgmt.Application.Interfaces;
+using TaskMgmt.Application.Mapping;
+using TaskMgmt.Application.Services;
+using TaskMgmt.Domain.Entities;
+using TaskMgmt.Domain.Enums;
+using TaskStatus = TaskMgmt.Domain.Enums.TaskStatus;
+
+namespace TaskMgmt.Tests.Services;
+
+public class TaskServiceTests
+{
+    private readonly Mock<IUnitOfWork> _unitOfWorkMock;
+    private readonly Mock<IRepository<TaskItem>> _repoMock;
+    private readonly IMapper _mapper;
+    private readonly TaskService _sut;
+
+    private readonly Guid _userId = Guid.NewGuid();
+
+    public TaskServiceTests()
+    {
+        _unitOfWorkMock = new Mock<IUnitOfWork>();
+        _repoMock = new Mock<IRepository<TaskItem>>();
+
+        _unitOfWorkMock.Setup(u => u.Repository<TaskItem>()).Returns(_repoMock.Object);
+
+        var config = new MapperConfiguration(cfg => cfg.AddProfile<MappingProfile>());
+        _mapper = config.CreateMapper();
+
+        _sut = new TaskService(_unitOfWorkMock.Object, _mapper);
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private TaskItem MakeTask(Guid? userId = null, Guid? id = null) => new()
+    {
+        Id = id ?? Guid.NewGuid(),
+        UserId = userId ?? _userId,
+        Title = "Test Task",
+        Description = "Description",
+        Priority = Priority.Medium,
+        Status = TaskStatus.Todo,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    // ── GetUserTasksAsync ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetUserTasksAsync_ReturnsTasksForUser()
+    {
+        var tasks = new List<TaskItem> { MakeTask(), MakeTask() };
+        _repoMock.Setup(r => r.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TaskItem, bool>>>()))
+                 .ReturnsAsync(tasks);
+
+        var result = await _sut.GetUserTasksAsync(_userId);
+
+        Assert.Equal(2, result.Count());
+    }
+
+    [Fact]
+    public async Task GetUserTasksAsync_ReturnsEmpty_WhenNoTasks()
+    {
+        _repoMock.Setup(r => r.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TaskItem, bool>>>()))
+                 .ReturnsAsync(new List<TaskItem>());
+
+        var result = await _sut.GetUserTasksAsync(_userId);
+
+        Assert.Empty(result);
+    }
+
+    // ── GetTaskByIdAsync ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetTaskByIdAsync_ReturnsTask_WhenOwnerAndExists()
+    {
+        var task = MakeTask();
+        _repoMock.Setup(r => r.GetByIdAsync(task.Id)).ReturnsAsync(task);
+
+        var result = await _sut.GetTaskByIdAsync(_userId, task.Id);
+
+        Assert.Equal(task.Id, result.Id);
+        Assert.Equal(task.Title, result.Title);
+    }
+
+    [Fact]
+    public async Task GetTaskByIdAsync_ThrowsNotFoundException_WhenTaskDoesNotExist()
+    {
+        _repoMock.Setup(r => r.GetByIdAsync(It.IsAny<Guid>())).ReturnsAsync((TaskItem?)null);
+
+        await Assert.ThrowsAsync<NotFoundException>(() => _sut.GetTaskByIdAsync(_userId, Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task GetTaskByIdAsync_ThrowsUnauthorizedException_WhenNotOwner()
+    {
+        var task = MakeTask(userId: Guid.NewGuid()); // different owner
+        _repoMock.Setup(r => r.GetByIdAsync(task.Id)).ReturnsAsync(task);
+
+        await Assert.ThrowsAsync<UnauthorizedException>(() => _sut.GetTaskByIdAsync(_userId, task.Id));
+    }
+
+    // ── CreateTaskAsync ───────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CreateTaskAsync_ReturnsCreatedTask()
+    {
+        var request = new CreateTaskRequest("New Task", "Desc", null, Priority.High);
+        _repoMock.Setup(r => r.AddAsync(It.IsAny<TaskItem>())).Returns(Task.CompletedTask);
+        _unitOfWorkMock.Setup(u => u.SaveChangesAsync()).ReturnsAsync(1);
+
+        var result = await _sut.CreateTaskAsync(_userId, request);
+
+        Assert.Equal("New Task", result.Title);
+        Assert.Equal(Priority.High, result.Priority);
+        _repoMock.Verify(r => r.AddAsync(It.Is<TaskItem>(t => t.UserId == _userId)), Times.Once);
+        _unitOfWorkMock.Verify(u => u.SaveChangesAsync(), Times.Once);
+    }
+
+    // ── UpdateTaskAsync ───────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task UpdateTaskAsync_ReturnsUpdatedTask_WhenOwnerAndExists()
+    {
+        var task = MakeTask();
+        _repoMock.Setup(r => r.GetByIdAsync(task.Id)).ReturnsAsync(task);
+        _unitOfWorkMock.Setup(u => u.SaveChangesAsync()).ReturnsAsync(1);
+
+        var request = new UpdateTaskRequest("Updated", "New Desc", null, Priority.Low, TaskStatus.InProgress);
+
+        var result = await _sut.UpdateTaskAsync(_userId, task.Id, request);
+
+        Assert.Equal("Updated", result.Title);
+        Assert.Equal(TaskStatus.InProgress, result.Status);
+        _repoMock.Verify(r => r.Update(It.IsAny<TaskItem>()), Times.Once);
+        _unitOfWorkMock.Verify(u => u.SaveChangesAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task UpdateTaskAsync_ThrowsNotFoundException_WhenTaskDoesNotExist()
+    {
+        _repoMock.Setup(r => r.GetByIdAsync(It.IsAny<Guid>())).ReturnsAsync((TaskItem?)null);
+
+        var request = new UpdateTaskRequest("X", "Y", null, Priority.Low, TaskStatus.Completed);
+
+        await Assert.ThrowsAsync<NotFoundException>(() => _sut.UpdateTaskAsync(_userId, Guid.NewGuid(), request));
+    }
+
+    [Fact]
+    public async Task UpdateTaskAsync_ThrowsUnauthorizedException_WhenNotOwner()
+    {
+        var task = MakeTask(userId: Guid.NewGuid());
+        _repoMock.Setup(r => r.GetByIdAsync(task.Id)).ReturnsAsync(task);
+
+        var request = new UpdateTaskRequest("X", "Y", null, Priority.Low, TaskStatus.Completed);
+
+        await Assert.ThrowsAsync<UnauthorizedException>(() => _sut.UpdateTaskAsync(_userId, task.Id, request));
+    }
+
+    // ── DeleteTaskAsync ───────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DeleteTaskAsync_DeletesTask_WhenOwnerAndExists()
+    {
+        var task = MakeTask();
+        _repoMock.Setup(r => r.GetByIdAsync(task.Id)).ReturnsAsync(task);
+        _unitOfWorkMock.Setup(u => u.SaveChangesAsync()).ReturnsAsync(1);
+
+        await _sut.DeleteTaskAsync(_userId, task.Id);
+
+        _repoMock.Verify(r => r.Remove(task), Times.Once);
+        _unitOfWorkMock.Verify(u => u.SaveChangesAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task DeleteTaskAsync_ThrowsNotFoundException_WhenTaskDoesNotExist()
+    {
+        _repoMock.Setup(r => r.GetByIdAsync(It.IsAny<Guid>())).ReturnsAsync((TaskItem?)null);
+
+        await Assert.ThrowsAsync<NotFoundException>(() => _sut.DeleteTaskAsync(_userId, Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task DeleteTaskAsync_ThrowsUnauthorizedException_WhenNotOwner()
+    {
+        var task = MakeTask(userId: Guid.NewGuid());
+        _repoMock.Setup(r => r.GetByIdAsync(task.Id)).ReturnsAsync(task);
+
+        await Assert.ThrowsAsync<UnauthorizedException>(() => _sut.DeleteTaskAsync(_userId, task.Id));
+    }
+}

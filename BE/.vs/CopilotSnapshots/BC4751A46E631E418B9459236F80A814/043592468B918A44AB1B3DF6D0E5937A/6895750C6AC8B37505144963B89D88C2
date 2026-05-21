@@ -1,0 +1,28 @@
+﻿using TaskMgmt.Domain.Enums;
+
+namespace TaskMgmt.Application.DTOs;
+
+public record TaskResponse(
+    Guid Id, 
+    string Title, 
+    string Description, 
+    DateTime? DueDate, 
+    Priority Priority, 
+    TaskStatus Status, 
+    DateTime CreatedAt
+);
+
+public record CreateTaskRequest(
+    string Title, 
+    string Description, 
+    DateTime? DueDate, 
+    Priority Priority
+);
+
+public record UpdateTaskRequest(
+    string Title, 
+    string Description, 
+    DateTime? DueDate, 
+    Priority Priority, 
+    TaskStatus Status
+);
